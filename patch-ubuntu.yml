@@ -1,0 +1,108 @@
+---
+# patch-ubuntu.yml
+#
+# Patch Ubuntu servers and reboot only when required.
+#
+# Usage:
+#   ansible-playbook -i inventory.ini patch-ubuntu.yml
+#
+#   # Dry run (report available updates, change nothing):
+#   ansible-playbook -i inventory.ini patch-ubuntu.yml --check
+#
+#   # Limit to a subset of hosts:
+#   ansible-playbook -i inventory.ini patch-ubuntu.yml --limit web
+#
+# Notes:
+#   - Hosts are patched in batches (serial) so the whole fleet is never
+#     rebooting at once.
+#   - A reboot happens only when /var/run/reboot-required exists, which is
+#     the signal Ubuntu uses after kernel/libc/etc. upgrades.
+
+- name: Patch Ubuntu servers with reboot when required
+  hosts: ubuntu
+  become: true
+  serial: "{{ patch_serial | default('25%') }}"
+
+  vars:
+    # Set to "dist" for full dist-upgrade, or "full" / "safe".
+    apt_upgrade_type: "dist"
+    # Remove unused dependency packages after upgrade.
+    apt_autoremove: true
+    # Clean the local apt cache after upgrade.
+    apt_autoclean: true
+    # How long (seconds) to wait for a host to come back after reboot.
+    reboot_timeout: 600
+    # Refuse to run on cache older than this (seconds).
+    apt_cache_valid_time: 3600
+
+  tasks:
+    - name: Confirm host is an Ubuntu/Debian family system
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == 'Debian'
+        fail_msg: "This playbook targets Debian/Ubuntu hosts only."
+        quiet: true
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: "{{ apt_cache_valid_time }}"
+
+    - name: List upgradable packages (informational)
+      ansible.builtin.command: apt list --upgradable
+      register: upgradable
+      changed_when: false
+      check_mode: false
+
+    - name: Show packages that will be upgraded
+      ansible.builtin.debug:
+        msg: "{{ upgradable.stdout_lines | reject('search', 'Listing...') | list }}"
+
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: "{{ apt_upgrade_type }}"
+        update_cache: true
+        cache_valid_time: "{{ apt_cache_valid_time }}"
+      register: apt_upgrade
+      notify: Report upgrade result
+
+    - name: Remove unused dependencies
+      ansible.builtin.apt:
+        autoremove: true
+      when: apt_autoremove | bool
+
+    - name: Clean obsolete packages from the cache
+      ansible.builtin.apt:
+        autoclean: true
+      when: apt_autoclean | bool
+
+    - name: Check whether a reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Show which packages requested the reboot
+      ansible.builtin.slurp:
+        src: /var/run/reboot-required.pkgs
+      register: reboot_pkgs
+      when: reboot_required_file.stat.exists
+      failed_when: false
+
+    - name: Reboot the host if required
+      ansible.builtin.reboot:
+        msg: "Reboot triggered by Ansible after patching"
+        reboot_timeout: "{{ reboot_timeout }}"
+        test_command: uptime
+      when:
+        - reboot_required_file.stat.exists
+        - not ansible_check_mode
+
+    - name: Report no reboot needed
+      ansible.builtin.debug:
+        msg: "No reboot required on {{ inventory_hostname }}."
+      when: not reboot_required_file.stat.exists
+
+  handlers:
+    - name: Report upgrade result
+      ansible.builtin.debug:
+        msg: "Package upgrade changed state on {{ inventory_hostname }}."
