@@ -109,34 +109,27 @@
   vars:
     # All hosts that were targeted in this run.
     all_hosts: "{{ ansible_play_hosts_all }}"
+    # List of per-host fact objects for every targeted host.
+    host_facts: "{{ all_hosts | map('extract', hostvars) | list }}"
     succeeded: >-
-      {{ all_hosts
-         | map('extract', hostvars, 'patch_status')
-         | list
-         | zip(all_hosts)
-         | selectattr('0', 'equalto', 'SUCCESS')
-         | map(attribute='1') | list }}
+      {{ host_facts
+         | selectattr('patch_status', 'defined')
+         | selectattr('patch_status', 'equalto', 'SUCCESS')
+         | map(attribute='inventory_hostname') | list }}
     failed: >-
-      {{ all_hosts
-         | map('extract', hostvars, 'patch_status')
-         | list
-         | zip(all_hosts)
-         | selectattr('0', 'equalto', 'FAILED')
-         | map(attribute='1') | list }}
+      {{ host_facts
+         | selectattr('patch_status', 'defined')
+         | selectattr('patch_status', 'equalto', 'FAILED')
+         | map(attribute='inventory_hostname') | list }}
     unreached: >-
-      {{ all_hosts
-         | map('extract', hostvars, 'patch_status')
-         | list
-         | zip(all_hosts)
-         | rejectattr('0', 'in', ['SUCCESS', 'FAILED'])
-         | map(attribute='1') | list }}
+      {{ host_facts
+         | rejectattr('patch_status', 'defined')
+         | map(attribute='inventory_hostname') | list }}
     rebooted: >-
-      {{ all_hosts
-         | map('extract', hostvars, 'patch_rebooted')
-         | list
-         | zip(all_hosts)
-         | selectattr('0', 'equalto', true)
-         | map(attribute='1') | list }}
+      {{ host_facts
+         | selectattr('patch_rebooted', 'defined')
+         | selectattr('patch_rebooted', 'equalto', true)
+         | map(attribute='inventory_hostname') | list }}
 
   tasks:
     - name: Show patch summary
