@@ -1,7 +1,8 @@
 ---
 # patch-ubuntu.yml
 #
-# Patch Ubuntu servers and reboot only when required.
+# Patch Ubuntu servers with "apt upgrade" and print a final summary of
+# which servers succeeded and which failed.
 #
 # Usage:
 #   ansible-playbook -i inventory.ini patch-ubuntu.yml
@@ -13,96 +14,130 @@
 #   ansible-playbook -i inventory.ini patch-ubuntu.yml --limit web
 #
 # Notes:
-#   - Hosts are patched in batches (serial) so the whole fleet is never
-#     rebooting at once.
-#   - A reboot happens only when /var/run/reboot-required exists, which is
-#     the signal Ubuntu uses after kernel/libc/etc. upgrades.
+#   - Each host's patching is wrapped in block/rescue so one failing host
+#     does NOT abort the run. The result is recorded per host and printed
+#     in a final summary at the end.
+#   - A reboot happens only when /var/run/reboot-required exists.
 
-- name: Patch Ubuntu servers with reboot when required
+- name: Patch Ubuntu servers with apt upgrade
   hosts: ubuntu
   become: true
-  serial: "{{ patch_serial | default('25%') }}"
+  # Keep going on all hosts even if some fail, so we can report them all.
+  any_errors_fatal: false
+  max_fail_percentage: 100
 
   vars:
-    # Set to "dist" for full dist-upgrade, or "full" / "safe".
-    apt_upgrade_type: "dist"
-    # Remove unused dependency packages after upgrade.
+    # Set to "dist" for full dist-upgrade, "full", or "safe".
+    apt_upgrade_type: "safe"
     apt_autoremove: true
-    # Clean the local apt cache after upgrade.
     apt_autoclean: true
-    # How long (seconds) to wait for a host to come back after reboot.
     reboot_timeout: 600
-    # Refuse to run on cache older than this (seconds).
     apt_cache_valid_time: 3600
 
   tasks:
-    - name: Confirm host is an Ubuntu/Debian family system
-      ansible.builtin.assert:
-        that:
-          - ansible_facts['os_family'] == 'Debian'
-        fail_msg: "This playbook targets Debian/Ubuntu hosts only."
-        quiet: true
+    - name: Patch this host
+      block:
+        - name: Confirm host is an Ubuntu/Debian family system
+          ansible.builtin.assert:
+            that:
+              - ansible_facts['os_family'] == 'Debian'
+            fail_msg: "This playbook targets Debian/Ubuntu hosts only."
+            quiet: true
 
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: "{{ apt_cache_valid_time }}"
+        - name: Update apt cache
+          ansible.builtin.apt:
+            update_cache: true
+            cache_valid_time: "{{ apt_cache_valid_time }}"
 
-    - name: List upgradable packages (informational)
-      ansible.builtin.command: apt list --upgradable
-      register: upgradable
-      changed_when: false
-      check_mode: false
+        - name: Run apt upgrade
+          ansible.builtin.apt:
+            upgrade: "{{ apt_upgrade_type }}"
+            update_cache: true
+            cache_valid_time: "{{ apt_cache_valid_time }}"
+          register: apt_upgrade
 
-    - name: Show packages that will be upgraded
+        - name: Remove unused dependencies
+          ansible.builtin.apt:
+            autoremove: true
+          when: apt_autoremove | bool
+
+        - name: Clean obsolete packages from the cache
+          ansible.builtin.apt:
+            autoclean: true
+          when: apt_autoclean | bool
+
+        - name: Check whether a reboot is required
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: reboot_required_file
+
+        - name: Reboot the host if required
+          ansible.builtin.reboot:
+            msg: "Reboot triggered by Ansible after patching"
+            reboot_timeout: "{{ reboot_timeout }}"
+            test_command: uptime
+          when:
+            - reboot_required_file.stat.exists
+            - not ansible_check_mode
+
+        - name: Mark this host as successfully patched
+          ansible.builtin.set_fact:
+            patch_status: "SUCCESS"
+            patch_rebooted: "{{ reboot_required_file.stat.exists | default(false) }}"
+            patch_changed: "{{ apt_upgrade.changed | default(false) }}"
+
+      rescue:
+        - name: Mark this host as failed
+          ansible.builtin.set_fact:
+            patch_status: "FAILED"
+            patch_rebooted: false
+            patch_changed: false
+            patch_error: "{{ ansible_failed_result.msg | default('see task output above') }}"
+
+        - name: Log the failure (do not abort the run)
+          ansible.builtin.debug:
+            msg: "Patching FAILED on {{ inventory_hostname }}: {{ patch_error }}"
+
+# ---------------------------------------------------------------------------
+# Final summary play — runs once and prints the result for every host.
+# ---------------------------------------------------------------------------
+- name: Patch summary
+  hosts: ubuntu
+  gather_facts: false
+  run_once: true
+
+  vars:
+    # All hosts that were targeted in this run.
+    all_hosts: "{{ ansible_play_hosts_all }}"
+    # List of per-host fact objects for every targeted host.
+    host_facts: "{{ all_hosts | map('extract', hostvars) | list }}"
+    succeeded: >-
+      {{ host_facts
+         | selectattr('patch_status', 'defined')
+         | selectattr('patch_status', 'equalto', 'SUCCESS')
+         | map(attribute='inventory_hostname') | list }}
+    failed: >-
+      {{ host_facts
+         | selectattr('patch_status', 'defined')
+         | selectattr('patch_status', 'equalto', 'FAILED')
+         | map(attribute='inventory_hostname') | list }}
+    unreached: >-
+      {{ host_facts
+         | rejectattr('patch_status', 'defined')
+         | map(attribute='inventory_hostname') | list }}
+    rebooted: >-
+      {{ host_facts
+         | selectattr('patch_rebooted', 'defined')
+         | selectattr('patch_rebooted', 'equalto', true)
+         | map(attribute='inventory_hostname') | list }}
+
+  tasks:
+    - name: Show patch summary
       ansible.builtin.debug:
-        msg: "{{ upgradable.stdout_lines | reject('search', 'Listing...') | list }}"
-
-    - name: Upgrade all packages
-      ansible.builtin.apt:
-        upgrade: "{{ apt_upgrade_type }}"
-        update_cache: true
-        cache_valid_time: "{{ apt_cache_valid_time }}"
-      register: apt_upgrade
-      notify: Report upgrade result
-
-    - name: Remove unused dependencies
-      ansible.builtin.apt:
-        autoremove: true
-      when: apt_autoremove | bool
-
-    - name: Clean obsolete packages from the cache
-      ansible.builtin.apt:
-        autoclean: true
-      when: apt_autoclean | bool
-
-    - name: Check whether a reboot is required
-      ansible.builtin.stat:
-        path: /var/run/reboot-required
-      register: reboot_required_file
-
-    - name: Show which packages requested the reboot
-      ansible.builtin.slurp:
-        src: /var/run/reboot-required.pkgs
-      register: reboot_pkgs
-      when: reboot_required_file.stat.exists
-      failed_when: false
-
-    - name: Reboot the host if required
-      ansible.builtin.reboot:
-        msg: "Reboot triggered by Ansible after patching"
-        reboot_timeout: "{{ reboot_timeout }}"
-        test_command: uptime
-      when:
-        - reboot_required_file.stat.exists
-        - not ansible_check_mode
-
-    - name: Report no reboot needed
-      ansible.builtin.debug:
-        msg: "No reboot required on {{ inventory_hostname }}."
-      when: not reboot_required_file.stat.exists
-
-  handlers:
-    - name: Report upgrade result
-      ansible.builtin.debug:
-        msg: "Package upgrade changed state on {{ inventory_hostname }}."
+        msg:
+          - "================== PATCH SUMMARY =================="
+          - "SUCCESS              ({{ succeeded | length }}): {{ succeeded }}"
+          - "FAILED               ({{ failed | length }}): {{ failed }}"
+          - "UNREACHABLE/SKIPPED  ({{ unreached | length }}): {{ unreached }}"
+          - "REBOOTED             ({{ rebooted | length }}): {{ rebooted }}"
+          - "=================================================="
