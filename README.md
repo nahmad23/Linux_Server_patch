@@ -16,10 +16,11 @@ the report regardless of result.
 
 ## Files
 
-| File               | Purpose                                              |
-| ------------------ | ---------------------------------------------------- |
-| `patch-ubuntu.yml` | The patching playbook.                               |
-| `inventory.ini`    | Example inventory. Replace with your real hosts.     |
+| File                    | Purpose                                              |
+| ----------------------- | ---------------------------------------------------- |
+| `patch-ubuntu.yml`      | The patching playbook (you don't need to edit this). |
+| `inventory.ini`         | Example inventory. Replace with your real hosts.     |
+| `group_vars/ubuntu.yml` | **Settings** — SMTP relay, recipient, upgrade type.  |
 
 ## What it does (per host)
 
@@ -70,9 +71,10 @@ ansible-playbook -i inventory.ini patch-ubuntu.yml --limit web
 ansible-playbook -i inventory.ini patch-ubuntu.yml --ask-become-pass
 ```
 
-## Tunable variables
+## Settings
 
-Set these via `-e` on the command line, or edit them in the playbook:
+Edit **`group_vars/ubuntu.yml`** — no need to touch the playbook. These apply to
+every host in the `[ubuntu]` group and can also be overridden per run with `-e`.
 
 | Variable           | Default                          | Description                                  |
 | ------------------ | -------------------------------- | -------------------------------------------- |
@@ -80,8 +82,14 @@ Set these via `-e` on the command line, or edit them in the playbook:
 | `reboot_timeout`   | `600`                            | Seconds to wait for a host after reboot.     |
 | `mail_to`          | `nawazish.ahmad@unitedlex.com`   | Report recipient.                            |
 | `mail_from`        | `ansible-patching@unitedlex.com` | Sender address.                              |
-| `smtp_host`        | `localhost`                      | SMTP relay host.                             |
+| `smtp_host`        | `localhost`                      | SMTP relay host (e.g. `smtp.unitedlex.com`). |
 | `smtp_port`        | `25`                             | SMTP relay port.                             |
+
+Override for a single run, for example:
+
+```bash
+ansible-playbook -i inventory.ini patch-ubuntu.yml -e smtp_host=smtp.unitedlex.com
+```
 
 ## Safety notes
 

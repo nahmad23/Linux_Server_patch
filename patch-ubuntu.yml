@@ -22,9 +22,8 @@
   become: true
   any_errors_fatal: false      # one bad host must not stop the others
 
-  vars:
-    apt_upgrade_type: "safe"   # "safe", "dist", or "full"
-    reboot_timeout: 600        # seconds to wait for a host to come back
+  # apt_upgrade_type and reboot_timeout come from group_vars/ubuntu.yml
+  # (defaults applied inline below if unset).
 
   tasks:
     - name: Patch this host
@@ -44,7 +43,7 @@
         # 3. Patch with apt upgrade.
         - name: Run apt upgrade
           ansible.builtin.apt:
-            upgrade: "{{ apt_upgrade_type }}"
+            upgrade: "{{ apt_upgrade_type | default('safe') }}"
           register: apt_upgrade
 
         # 4. Clean up.
@@ -57,7 +56,7 @@
         - name: Reboot the host because it was patched
           ansible.builtin.reboot:
             msg: "Reboot after Ansible patching"
-            reboot_timeout: "{{ reboot_timeout }}"
+            reboot_timeout: "{{ reboot_timeout | default(600) }}"
           when:
             - apt_upgrade is changed
             - not ansible_check_mode
@@ -84,11 +83,8 @@
   run_once: true
 
   vars:
-    # --- email settings (edit these for your environment) ---
-    mail_to: "nawazish.ahmad@unitedlex.com"
-    mail_from: "ansible-patching@unitedlex.com"
-    smtp_host: "localhost"
-    smtp_port: 25
+    # Email settings (mail_to / mail_from / smtp_host / smtp_port) come from
+    # group_vars/ubuntu.yml. Inline defaults below are used only if unset.
 
     # --- categorise hosts by result ---
     host_facts: "{{ ansible_play_hosts_all | map('extract', hostvars) | list }}"
@@ -112,10 +108,10 @@
 
     - name: Email the patch report
       community.general.mail:
-        host: "{{ smtp_host }}"
-        port: "{{ smtp_port }}"
-        to: "{{ mail_to }}"
-        from: "{{ mail_from }}"
+        host: "{{ smtp_host | default('localhost') }}"
+        port: "{{ smtp_port | default(25) }}"
+        to: "{{ mail_to | default('nawazish.ahmad@unitedlex.com') }}"
+        from: "{{ mail_from | default('ansible-patching@unitedlex.com') }}"
         subject: "Ubuntu Patching Report - {{ failed | length }} failed / {{ succeeded | length }} success"
         body: "{{ report_body }}"
       delegate_to: localhost
