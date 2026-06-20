@@ -25,9 +25,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install ansible-core ansible-lint
 
-      - name: Install required Ansible collections
-        run: ansible-galaxy collection install community.general
-
       - name: Syntax check
         run: ansible-playbook --syntax-check -i inventory.ini patch-ubuntu.yml
 

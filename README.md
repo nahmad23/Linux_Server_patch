@@ -2,11 +2,11 @@
 
 An Ansible playbook to patch Ubuntu servers with **`apt upgrade`**, fix any
 broken **dpkg** state, **reboot every server that was actually patched**, and
-**email a final patching status report**.
+print a **final patching status summary** on screen.
 
 A failing host does **not** abort the whole run — its patching is wrapped in
 `block`/`rescue`, the outcome is recorded per host, and every host is listed in
-the report regardless of result.
+the summary regardless of result.
 
 > **Note on architecture:** Ansible is agentless and push-based. Run this from
 > a single **control node**; the target servers only need SSH access and
@@ -20,7 +20,7 @@ the report regardless of result.
 | ----------------------- | ---------------------------------------------------- |
 | `patch-ubuntu.yml`      | The patching playbook (you don't need to edit this). |
 | `inventory.ini`         | Example inventory. Replace with your real hosts.     |
-| `group_vars/ubuntu.yml` | **Settings** — SMTP relay, recipient, upgrade type.  |
+| `group_vars/ubuntu.yml` | **Settings** — upgrade type, reboot timeout.         |
 
 ## What it does (per host)
 
@@ -30,29 +30,22 @@ the report regardless of result.
 4. Autoremoves unused dependencies and cleans the cache.
 5. **Mandatory reboot if the host was patched** (i.e. `apt upgrade` changed
    anything). Hosts with no updates are not rebooted.
-6. Records SUCCESS / FAILED for the report.
+6. Records SUCCESS / FAILED for the summary.
 
-Then a final play (runs once) **prints and emails** the report:
+Then a final play (runs once) **prints the summary**:
 
 ```
-Ubuntu patching report - 2026-06-20
-
-SUCCESS  (2): web01, web02
-FAILED   (1): db01
-SKIPPED  (0): none
-REBOOTED (2): web01, web02
+================== PATCH SUMMARY ==================
+SUCCESS              (2): ['web01', 'web02']
+FAILED               (1): ['db01']
+UNREACHABLE/SKIPPED  (0): []
+REBOOTED             (2): ['web01', 'web02']
+==================================================
 ```
-
-The email is sent to **nawazish.ahmad@unitedlex.com** (configurable).
 
 ## Requirements
 
 - Ansible 2.10+ on the control node.
-- The `community.general` collection (for the email step):
-  ```bash
-  ansible-galaxy collection install community.general
-  ```
-- A reachable SMTP relay (set `smtp_host` / `smtp_port` in the playbook).
 - SSH access to targets with a user able to `sudo`; Python 3 on the targets.
 
 ## Usage
@@ -61,7 +54,7 @@ The email is sent to **nawazish.ahmad@unitedlex.com** (configurable).
 # Patch everything in the "ubuntu" group
 ansible-playbook -i inventory.ini patch-ubuntu.yml
 
-# Dry run — reports actions, skips reboot and email
+# Dry run — reports actions, skips the reboot
 ansible-playbook -i inventory.ini patch-ubuntu.yml --check
 
 # Limit to a subset
@@ -76,23 +69,19 @@ ansible-playbook -i inventory.ini patch-ubuntu.yml --ask-become-pass
 Edit **`group_vars/ubuntu.yml`** — no need to touch the playbook. These apply to
 every host in the `[ubuntu]` group and can also be overridden per run with `-e`.
 
-| Variable           | Default                          | Description                                  |
-| ------------------ | -------------------------------- | -------------------------------------------- |
-| `apt_upgrade_type` | `safe`                           | `safe`, `dist`, or `full`.                   |
-| `reboot_timeout`   | `600`                            | Seconds to wait for a host after reboot.     |
-| `mail_to`          | `nawazish.ahmad@unitedlex.com`   | Report recipient.                            |
-| `mail_from`        | `ansible-patching@unitedlex.com` | Sender address.                              |
-| `smtp_host`        | `localhost`                      | SMTP relay host (e.g. `smtp.unitedlex.com`). |
-| `smtp_port`        | `25`                             | SMTP relay port.                             |
+| Variable           | Default | Description                              |
+| ------------------ | ------- | ---------------------------------------- |
+| `apt_upgrade_type` | `safe`  | `safe`, `dist`, or `full`.               |
+| `reboot_timeout`   | `600`   | Seconds to wait for a host after reboot. |
 
 Override for a single run, for example:
 
 ```bash
-ansible-playbook -i inventory.ini patch-ubuntu.yml -e smtp_host=smtp.unitedlex.com
+ansible-playbook -i inventory.ini patch-ubuntu.yml -e apt_upgrade_type=dist
 ```
 
 ## Safety notes
 
-- `--check` mode reports actions and skips both the reboot and the email.
-- A failure on one host is caught (`rescue`) and reported instead of aborting
-  the run, so you always get a full report and email.
+- `--check` mode reports actions and skips the reboot.
+- A failure on one host is caught (`rescue`) and reported in the summary
+  instead of aborting the run, so you always get a full picture.

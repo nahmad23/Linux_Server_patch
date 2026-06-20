@@ -7,9 +7,3 @@
 # --- Patching ---
 apt_upgrade_type: "safe"        # "safe", "dist", or "full"
 reboot_timeout: 600             # seconds to wait for a host after reboot
-
-# --- Email report ---
-mail_to: "nawazish.ahmad@unitedlex.com"
-mail_from: "ansible-patching@unitedlex.com"
-smtp_host: "localhost"          # your SMTP relay (e.g. smtp.unitedlex.com)
-smtp_port: 25

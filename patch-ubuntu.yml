@@ -2,17 +2,13 @@
 # patch-ubuntu.yml
 #
 # Patch Ubuntu servers with "apt upgrade", fix any broken dpkg state,
-# reboot every server that actually got patched, and email a final
-# patching status report.
+# reboot every server that actually got patched, and print a final
+# patching status summary on screen.
 #
 # Usage:
 #   ansible-playbook -i inventory.ini patch-ubuntu.yml
 #   ansible-playbook -i inventory.ini patch-ubuntu.yml --check   # dry run
 #   ansible-playbook -i inventory.ini patch-ubuntu.yml --limit web
-#
-# Email requires the community.general collection on the control node:
-#   ansible-galaxy collection install community.general
-# and a working SMTP relay (set smtp_host/smtp_port below).
 
 # ===========================================================================
 # PLAY 1 : Patch every host
@@ -61,7 +57,7 @@
             - apt_upgrade is changed
             - not ansible_check_mode
 
-        # 6. Record the result for the report.
+        # 6. Record the result for the summary.
         - name: Mark host SUCCESS
           ansible.builtin.set_fact:
             patch_status: "SUCCESS"
@@ -75,44 +71,38 @@
             patch_error: "{{ ansible_failed_result.msg | default('see task output') }}"
 
 # ===========================================================================
-# PLAY 2 : Build + show + email the patching status report
+# PLAY 2 : Print the patching status summary
 # ===========================================================================
-- name: Send patching status report
+- name: Patch summary
   hosts: ubuntu
   gather_facts: false
   run_once: true
 
   vars:
-    # Email settings (mail_to / mail_from / smtp_host / smtp_port) come from
-    # group_vars/ubuntu.yml. Inline defaults below are used only if unset.
-
-    # --- categorise hosts by result ---
     host_facts: "{{ ansible_play_hosts_all | map('extract', hostvars) | list }}"
-    succeeded: "{{ host_facts | selectattr('patch_status', 'defined') | selectattr('patch_status', 'equalto', 'SUCCESS') | map(attribute='inventory_hostname') | list }}"
-    failed: "{{ host_facts | selectattr('patch_status', 'defined') | selectattr('patch_status', 'equalto', 'FAILED') | map(attribute='inventory_hostname') | list }}"
-    unreached: "{{ host_facts | rejectattr('patch_status', 'defined') | map(attribute='inventory_hostname') | list }}"
-    rebooted: "{{ host_facts | selectattr('patch_rebooted', 'defined') | selectattr('patch_rebooted', 'equalto', true) | map(attribute='inventory_hostname') | list }}"
-
-    report_body: |
-      Ubuntu patching report - {{ ansible_date_time.date | default('') }}
-
-      SUCCESS  ({{ succeeded | length }}): {{ succeeded | join(', ') or 'none' }}
-      FAILED   ({{ failed | length }}): {{ failed | join(', ') or 'none' }}
-      SKIPPED  ({{ unreached | length }}): {{ unreached | join(', ') or 'none' }}
-      REBOOTED ({{ rebooted | length }}): {{ rebooted | join(', ') or 'none' }}
+    succeeded: >-
+      {{ host_facts | selectattr('patch_status', 'defined')
+         | selectattr('patch_status', 'equalto', 'SUCCESS')
+         | map(attribute='inventory_hostname') | list }}
+    failed: >-
+      {{ host_facts | selectattr('patch_status', 'defined')
+         | selectattr('patch_status', 'equalto', 'FAILED')
+         | map(attribute='inventory_hostname') | list }}
+    unreached: >-
+      {{ host_facts | rejectattr('patch_status', 'defined')
+         | map(attribute='inventory_hostname') | list }}
+    rebooted: >-
+      {{ host_facts | selectattr('patch_rebooted', 'defined')
+         | selectattr('patch_rebooted', 'equalto', true)
+         | map(attribute='inventory_hostname') | list }}
 
   tasks:
-    - name: Show patch summary on screen
+    - name: Show patch summary
       ansible.builtin.debug:
-        msg: "{{ report_body.split('\n') }}"
-
-    - name: Email the patch report
-      community.general.mail:
-        host: "{{ smtp_host | default('localhost') }}"
-        port: "{{ smtp_port | default(25) }}"
-        to: "{{ mail_to | default('nawazish.ahmad@unitedlex.com') }}"
-        from: "{{ mail_from | default('ansible-patching@unitedlex.com') }}"
-        subject: "Ubuntu Patching Report - {{ failed | length }} failed / {{ succeeded | length }} success"
-        body: "{{ report_body }}"
-      delegate_to: localhost
-      when: not ansible_check_mode
+        msg:
+          - "================== PATCH SUMMARY =================="
+          - "SUCCESS              ({{ succeeded | length }}): {{ succeeded }}"
+          - "FAILED               ({{ failed | length }}): {{ failed }}"
+          - "UNREACHABLE/SKIPPED  ({{ unreached | length }}): {{ unreached }}"
+          - "REBOOTED             ({{ rebooted | length }}): {{ rebooted }}"
+          - "=================================================="
