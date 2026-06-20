@@ -16,7 +16,8 @@
 - name: Patch Ubuntu servers
   hosts: ubuntu
   become: true
-  any_errors_fatal: false      # one bad host must not stop the others
+  any_errors_fatal: false               # one bad host must not stop the others
+  serial: "{{ patch_serial | default('50%') }}"   # patch 50% of hosts at a time
 
   # apt_upgrade_type and reboot_timeout come from group_vars/ubuntu.yml
   # (defaults applied inline below if unset).

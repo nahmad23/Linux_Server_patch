@@ -4,6 +4,10 @@ An Ansible playbook to patch Ubuntu servers with **`apt upgrade`**, fix any
 broken **dpkg** state, **reboot every server that was actually patched**, and
 print a **final patching status summary** on screen.
 
+Hosts are patched in **parallel batches of 50% at a time** (`serial`), not one
+by one — so a fleet is patched in two waves while never taking the whole
+estate down at once.
+
 A failing host does **not** abort the whole run — its patching is wrapped in
 `block`/`rescue`, the outcome is recorded per host, and every host is listed in
 the summary regardless of result.
@@ -78,6 +82,17 @@ Override for a single run, for example:
 
 ```bash
 ansible-playbook -i inventory.ini patch-ubuntu.yml -e apt_upgrade_type=dist
+```
+
+### Batch size (parallelism)
+
+By default 50% of the hosts are patched at a time. Change the batch size with
+`patch_serial` (a percentage or a fixed count):
+
+```bash
+ansible-playbook -i inventory.ini patch-ubuntu.yml -e patch_serial=25%   # 4 waves
+ansible-playbook -i inventory.ini patch-ubuntu.yml -e patch_serial=1     # one at a time
+ansible-playbook -i inventory.ini patch-ubuntu.yml -e patch_serial=100%  # all at once
 ```
 
 ## Safety notes
