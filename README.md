@@ -25,6 +25,7 @@ the summary regardless of result.
 | `patch-ubuntu.yml`      | The patching playbook (you don't need to edit this). |
 | `inventory.ini`         | Example inventory. Replace with your real hosts.     |
 | `group_vars/ubuntu.yml` | **Settings** — upgrade type, reboot timeout.         |
+| `ansible.cfg`           | `forks = 50` so a 50% wave runs fully in parallel.   |
 
 ## What it does (per host)
 
@@ -94,6 +95,12 @@ ansible-playbook -i inventory.ini patch-ubuntu.yml -e patch_serial=25%   # 4 wav
 ansible-playbook -i inventory.ini patch-ubuntu.yml -e patch_serial=1     # one at a time
 ansible-playbook -i inventory.ini patch-ubuntu.yml -e patch_serial=100%  # all at once
 ```
+
+**Parallelism:** `serial` sets the wave size, but Ansible's default `forks = 5`
+would still trickle 5 hosts at a time. `ansible.cfg` raises this to `forks = 50`
+so the whole 50% wave runs at once. For a fleet larger than ~100 servers, bump
+`forks` in `ansible.cfg` to at least half your total host count (or pass `-f`,
+e.g. `-f 100`).
 
 ## Safety notes
 
