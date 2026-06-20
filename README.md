@@ -1,13 +1,18 @@
 # Ubuntu Server Patching Playbook
 
-An Ansible playbook to patch Ubuntu servers with **`apt upgrade`**, reboot them
-**only when a reboot is actually required** (i.e. when `/var/run/reboot-required`
-is present after the upgrade), and print a **final summary** at the end showing
-which servers succeeded and which failed.
+An Ansible playbook to patch Ubuntu servers with **`apt upgrade`**, fix any
+broken **dpkg** state, **reboot every server that was actually patched**, and
+**email a final patching status report**.
 
 A failing host does **not** abort the whole run — its patching is wrapped in
 `block`/`rescue`, the outcome is recorded per host, and every host is listed in
-the summary regardless of result.
+the report regardless of result.
+
+> **Note on architecture:** Ansible is agentless and push-based. Run this from
+> a single **control node**; the target servers only need SSH access and
+> Python 3. Do **not** clone this repo onto the servers being patched, and do
+> not list the control node itself in the `[ubuntu]` group (rebooting it would
+> kill the run).
 
 ## Files
 
@@ -16,33 +21,38 @@ the summary regardless of result.
 | `patch-ubuntu.yml` | The patching playbook.                               |
 | `inventory.ini`    | Example inventory. Replace with your real hosts.     |
 
-## What it does
+## What it does (per host)
 
-1. Asserts the target is a Debian/Ubuntu host.
+1. **Fixes dpkg state** with `dpkg --configure -a`.
 2. Updates the apt cache.
-3. Runs `apt upgrade` (`safe` upgrade by default; configurable).
-4. Optionally autoremoves unused dependencies and cleans the cache.
-5. Checks for `/var/run/reboot-required`.
-6. Reboots and waits for the host to return — **only if required**.
-7. Records SUCCESS/FAILED per host and prints a final summary play listing
-   succeeded, failed, unreachable/skipped, and rebooted servers.
+3. Runs **`apt upgrade`** (`safe` upgrade by default; configurable).
+4. Autoremoves unused dependencies and cleans the cache.
+5. **Mandatory reboot if the host was patched** (i.e. `apt upgrade` changed
+   anything). Hosts with no updates are not rebooted.
+6. Records SUCCESS / FAILED for the report.
 
-Example summary output:
+Then a final play (runs once) **prints and emails** the report:
 
 ```
-================== PATCH SUMMARY ==================
-SUCCESS              (2): ['web01.example.com', 'web02.example.com']
-FAILED               (1): ['db01.example.com']
-UNREACHABLE/SKIPPED  (0): []
-REBOOTED             (1): ['web01.example.com']
-==================================================
+Ubuntu patching report - 2026-06-20
+
+SUCCESS  (2): web01, web02
+FAILED   (1): db01
+SKIPPED  (0): none
+REBOOTED (2): web01, web02
 ```
+
+The email is sent to **nawazish.ahmad@unitedlex.com** (configurable).
 
 ## Requirements
 
 - Ansible 2.10+ on the control node.
-- SSH access to targets with a user able to `sudo`.
-- Python 3 on the targets.
+- The `community.general` collection (for the email step):
+  ```bash
+  ansible-galaxy collection install community.general
+  ```
+- A reachable SMTP relay (set `smtp_host` / `smtp_port` in the playbook).
+- SSH access to targets with a user able to `sudo`; Python 3 on the targets.
 
 ## Usage
 
@@ -50,27 +60,31 @@ REBOOTED             (1): ['web01.example.com']
 # Patch everything in the "ubuntu" group
 ansible-playbook -i inventory.ini patch-ubuntu.yml
 
-# Dry run — report what would change, without applying or rebooting
+# Dry run — reports actions, skips reboot and email
 ansible-playbook -i inventory.ini patch-ubuntu.yml --check
 
 # Limit to a subset
 ansible-playbook -i inventory.ini patch-ubuntu.yml --limit web
+
+# If sudo needs a password
+ansible-playbook -i inventory.ini patch-ubuntu.yml --ask-become-pass
 ```
 
 ## Tunable variables
 
-Set these via `-e` on the command line or in your inventory/group vars:
+Set these via `-e` on the command line, or edit them in the playbook:
 
-| Variable               | Default  | Description                                       |
-| ---------------------- | -------- | ------------------------------------------------- |
-| `apt_upgrade_type`     | `safe`   | `safe`, `dist`, or `full`.                        |
-| `apt_autoremove`       | `true`   | Remove unused dependency packages after upgrade.  |
-| `apt_autoclean`        | `true`   | Clean obsolete packages from the local cache.     |
-| `reboot_timeout`       | `600`    | Seconds to wait for a host to return after reboot.|
-| `apt_cache_valid_time` | `3600`   | Skip cache update if newer than this many seconds.|
+| Variable           | Default                          | Description                                  |
+| ------------------ | -------------------------------- | -------------------------------------------- |
+| `apt_upgrade_type` | `safe`                           | `safe`, `dist`, or `full`.                   |
+| `reboot_timeout`   | `600`                            | Seconds to wait for a host after reboot.     |
+| `mail_to`          | `nawazish.ahmad@unitedlex.com`   | Report recipient.                            |
+| `mail_from`        | `ansible-patching@unitedlex.com` | Sender address.                              |
+| `smtp_host`        | `localhost`                      | SMTP relay host.                             |
+| `smtp_port`        | `25`                             | SMTP relay port.                             |
 
 ## Safety notes
 
-- `--check` mode reports updates and skips the reboot.
-- A failure on one host is caught (`rescue`) and reported in the summary
-  instead of aborting the run, so you always get a full picture.
+- `--check` mode reports actions and skips both the reboot and the email.
+- A failure on one host is caught (`rescue`) and reported instead of aborting
+  the run, so you always get a full report and email.

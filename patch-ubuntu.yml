@@ -1,143 +1,122 @@
 ---
 # patch-ubuntu.yml
 #
-# Patch Ubuntu servers with "apt upgrade" and print a final summary of
-# which servers succeeded and which failed.
+# Patch Ubuntu servers with "apt upgrade", fix any broken dpkg state,
+# reboot every server that actually got patched, and email a final
+# patching status report.
 #
 # Usage:
 #   ansible-playbook -i inventory.ini patch-ubuntu.yml
-#
-#   # Dry run (report available updates, change nothing):
-#   ansible-playbook -i inventory.ini patch-ubuntu.yml --check
-#
-#   # Limit to a subset of hosts:
+#   ansible-playbook -i inventory.ini patch-ubuntu.yml --check   # dry run
 #   ansible-playbook -i inventory.ini patch-ubuntu.yml --limit web
 #
-# Notes:
-#   - Each host's patching is wrapped in block/rescue so one failing host
-#     does NOT abort the run. The result is recorded per host and printed
-#     in a final summary at the end.
-#   - A reboot happens only when /var/run/reboot-required exists.
+# Email requires the community.general collection on the control node:
+#   ansible-galaxy collection install community.general
+# and a working SMTP relay (set smtp_host/smtp_port below).
 
-- name: Patch Ubuntu servers with apt upgrade
+# ===========================================================================
+# PLAY 1 : Patch every host
+# ===========================================================================
+- name: Patch Ubuntu servers
   hosts: ubuntu
   become: true
-  # Keep going on all hosts even if some fail, so we can report them all.
-  any_errors_fatal: false
-  max_fail_percentage: 100
+  any_errors_fatal: false      # one bad host must not stop the others
 
   vars:
-    # Set to "dist" for full dist-upgrade, "full", or "safe".
-    apt_upgrade_type: "safe"
-    apt_autoremove: true
-    apt_autoclean: true
-    reboot_timeout: 600
-    apt_cache_valid_time: 3600
+    apt_upgrade_type: "safe"   # "safe", "dist", or "full"
+    reboot_timeout: 600        # seconds to wait for a host to come back
 
   tasks:
     - name: Patch this host
       block:
-        - name: Confirm host is an Ubuntu/Debian family system
-          ansible.builtin.assert:
-            that:
-              - ansible_facts['os_family'] == 'Debian'
-            fail_msg: "This playbook targets Debian/Ubuntu hosts only."
-            quiet: true
 
+        # 1. Fix any half-configured / broken dpkg state first.
+        - name: Fix dpkg state (dpkg --configure -a)
+          ansible.builtin.command: dpkg --configure -a
+          register: dpkg_fix
+          changed_when: dpkg_fix.stdout | length > 0
+
+        # 2. Update the package list.
         - name: Update apt cache
           ansible.builtin.apt:
             update_cache: true
-            cache_valid_time: "{{ apt_cache_valid_time }}"
 
+        # 3. Patch with apt upgrade.
         - name: Run apt upgrade
           ansible.builtin.apt:
             upgrade: "{{ apt_upgrade_type }}"
-            update_cache: true
-            cache_valid_time: "{{ apt_cache_valid_time }}"
           register: apt_upgrade
 
-        - name: Remove unused dependencies
+        # 4. Clean up.
+        - name: Remove unused dependencies and clean cache
           ansible.builtin.apt:
             autoremove: true
-          when: apt_autoremove | bool
-
-        - name: Clean obsolete packages from the cache
-          ansible.builtin.apt:
             autoclean: true
-          when: apt_autoclean | bool
 
-        - name: Check whether a reboot is required
-          ansible.builtin.stat:
-            path: /var/run/reboot-required
-          register: reboot_required_file
-
-        - name: Reboot the host if required
+        # 5. MANDATORY reboot when this host was actually patched.
+        - name: Reboot the host because it was patched
           ansible.builtin.reboot:
-            msg: "Reboot triggered by Ansible after patching"
+            msg: "Reboot after Ansible patching"
             reboot_timeout: "{{ reboot_timeout }}"
-            test_command: uptime
           when:
-            - reboot_required_file.stat.exists
+            - apt_upgrade is changed
             - not ansible_check_mode
 
-        - name: Mark this host as successfully patched
+        # 6. Record the result for the report.
+        - name: Mark host SUCCESS
           ansible.builtin.set_fact:
             patch_status: "SUCCESS"
-            patch_rebooted: "{{ reboot_required_file.stat.exists | default(false) }}"
-            patch_changed: "{{ apt_upgrade.changed | default(false) }}"
+            patch_rebooted: "{{ apt_upgrade is changed }}"
 
       rescue:
-        - name: Mark this host as failed
+        - name: Mark host FAILED
           ansible.builtin.set_fact:
             patch_status: "FAILED"
             patch_rebooted: false
-            patch_changed: false
-            patch_error: "{{ ansible_failed_result.msg | default('see task output above') }}"
+            patch_error: "{{ ansible_failed_result.msg | default('see task output') }}"
 
-        - name: Log the failure (do not abort the run)
-          ansible.builtin.debug:
-            msg: "Patching FAILED on {{ inventory_hostname }}: {{ patch_error }}"
-
-# ---------------------------------------------------------------------------
-# Final summary play — runs once and prints the result for every host.
-# ---------------------------------------------------------------------------
-- name: Patch summary
+# ===========================================================================
+# PLAY 2 : Build + show + email the patching status report
+# ===========================================================================
+- name: Send patching status report
   hosts: ubuntu
   gather_facts: false
   run_once: true
 
   vars:
-    # All hosts that were targeted in this run.
-    all_hosts: "{{ ansible_play_hosts_all }}"
-    # List of per-host fact objects for every targeted host.
-    host_facts: "{{ all_hosts | map('extract', hostvars) | list }}"
-    succeeded: >-
-      {{ host_facts
-         | selectattr('patch_status', 'defined')
-         | selectattr('patch_status', 'equalto', 'SUCCESS')
-         | map(attribute='inventory_hostname') | list }}
-    failed: >-
-      {{ host_facts
-         | selectattr('patch_status', 'defined')
-         | selectattr('patch_status', 'equalto', 'FAILED')
-         | map(attribute='inventory_hostname') | list }}
-    unreached: >-
-      {{ host_facts
-         | rejectattr('patch_status', 'defined')
-         | map(attribute='inventory_hostname') | list }}
-    rebooted: >-
-      {{ host_facts
-         | selectattr('patch_rebooted', 'defined')
-         | selectattr('patch_rebooted', 'equalto', true)
-         | map(attribute='inventory_hostname') | list }}
+    # --- email settings (edit these for your environment) ---
+    mail_to: "nawazish.ahmad@unitedlex.com"
+    mail_from: "ansible-patching@unitedlex.com"
+    smtp_host: "localhost"
+    smtp_port: 25
+
+    # --- categorise hosts by result ---
+    host_facts: "{{ ansible_play_hosts_all | map('extract', hostvars) | list }}"
+    succeeded: "{{ host_facts | selectattr('patch_status', 'defined') | selectattr('patch_status', 'equalto', 'SUCCESS') | map(attribute='inventory_hostname') | list }}"
+    failed: "{{ host_facts | selectattr('patch_status', 'defined') | selectattr('patch_status', 'equalto', 'FAILED') | map(attribute='inventory_hostname') | list }}"
+    unreached: "{{ host_facts | rejectattr('patch_status', 'defined') | map(attribute='inventory_hostname') | list }}"
+    rebooted: "{{ host_facts | selectattr('patch_rebooted', 'defined') | selectattr('patch_rebooted', 'equalto', true) | map(attribute='inventory_hostname') | list }}"
+
+    report_body: |
+      Ubuntu patching report - {{ ansible_date_time.date | default('') }}
+
+      SUCCESS  ({{ succeeded | length }}): {{ succeeded | join(', ') or 'none' }}
+      FAILED   ({{ failed | length }}): {{ failed | join(', ') or 'none' }}
+      SKIPPED  ({{ unreached | length }}): {{ unreached | join(', ') or 'none' }}
+      REBOOTED ({{ rebooted | length }}): {{ rebooted | join(', ') or 'none' }}
 
   tasks:
-    - name: Show patch summary
+    - name: Show patch summary on screen
       ansible.builtin.debug:
-        msg:
-          - "================== PATCH SUMMARY =================="
-          - "SUCCESS              ({{ succeeded | length }}): {{ succeeded }}"
-          - "FAILED               ({{ failed | length }}): {{ failed }}"
-          - "UNREACHABLE/SKIPPED  ({{ unreached | length }}): {{ unreached }}"
-          - "REBOOTED             ({{ rebooted | length }}): {{ rebooted }}"
-          - "=================================================="
+        msg: "{{ report_body.split('\n') }}"
+
+    - name: Email the patch report
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        to: "{{ mail_to }}"
+        from: "{{ mail_from }}"
+        subject: "Ubuntu Patching Report - {{ failed | length }} failed / {{ succeeded | length }} success"
+        body: "{{ report_body }}"
+      delegate_to: localhost
+      when: not ansible_check_mode
