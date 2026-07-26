@@ -6,4 +6,9 @@
 
 # --- Patching ---
 apt_upgrade_type: "safe"        # "safe", "dist", or "full"
-reboot_timeout: 600             # seconds to wait for a host after reboot
+reboot_timeout: 900             # seconds to wait for a host after reboot
+
+# Config-file conflict policy during upgrades (auto-answered, no prompt):
+#   force-confnew -> install the package maintainer's NEW config file (default)
+#   force-confold -> keep the existing config file already on the server
+apt_dpkg_options: "force-confnew"

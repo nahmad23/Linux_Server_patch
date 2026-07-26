@@ -28,6 +28,8 @@
       #  - DEBIAN_FRONTEND=noninteractive  -> no debconf "yes/no" dialogs
       #  - NEEDRESTART_MODE=a              -> needrestart auto-restarts
       #    services instead of asking which ones to restart (Ubuntu 22.04+)
+      #  - config-file conflicts are resolved by apt_dpkg_options
+      #    (default force-confnew = install the new package version)
       environment:
         DEBIAN_FRONTEND: noninteractive
         NEEDRESTART_MODE: a
@@ -49,11 +51,14 @@
           when: apt_proxy.stat.exists
 
         # 1. Fix any half-configured / broken dpkg state.
-        #    --force-confdef/--force-confold auto-answer config-file prompts.
+        #    The conf option auto-answers config-file prompts. Default policy
+        #    (force-confnew) installs the package maintainer's NEW config.
         #    Retried so a transient dpkg lock (e.g. unattended-upgrades) does
         #    not fail the host outright.
         - name: Fix dpkg state (dpkg --configure -a)
-          ansible.builtin.command: dpkg --configure -a --force-confdef --force-confold
+          ansible.builtin.command: >-
+            dpkg --configure -a
+            --{{ apt_dpkg_options | default('force-confnew') | replace(',', ' --') }}
           register: dpkg_fix
           changed_when: dpkg_fix.stdout | length > 0
           retries: 5
@@ -74,12 +79,13 @@
           ignore_errors: true
 
         # 3. Patch with apt upgrade (auto-answer all prompts).
-        #    lock_timeout waits up to 5 min for the dpkg lock instead of
-        #    failing instantly; retried for transient lock/network errors.
+        #    dpkg_options default (force-confnew) upgrades config files to the
+        #    new package version. lock_timeout waits up to 5 min for the dpkg
+        #    lock instead of failing instantly; retried for transient errors.
         - name: Run apt upgrade
           ansible.builtin.apt:
             upgrade: "{{ apt_upgrade_type | default('safe') }}"
-            dpkg_options: "force-confdef,force-confold"
+            dpkg_options: "{{ apt_dpkg_options | default('force-confnew') }}"
             lock_timeout: 300
           register: apt_upgrade
           retries: 3

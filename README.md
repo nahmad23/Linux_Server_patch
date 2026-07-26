@@ -33,7 +33,7 @@ the summary regardless of result.
    in `/etc/apt/apt.conf.d/01proxy` (a bad/slow proxy makes the cache update
    hang). A `.bak` backup is kept. Path is overridable via `apt_proxy_file`.
 1. **Fixes dpkg state** with `dpkg --configure -a` (auto-answers config-file
-   prompts via `--force-confdef --force-confold`).
+   prompts; installs the new config by default via `--force-confnew`).
 2. **Updates the apt cache — non-fatal.** Retries a few times; if it still
    fails, the run continues and patches with the existing cache instead of
    breaking.
@@ -45,11 +45,19 @@ the summary regardless of result.
 6. Records SUCCESS / FAILED for the summary.
 
 **Prompts are answered automatically.** Every step runs with
-`DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=a`, and
-`force-confdef,force-confold`, so any "yes/no", "keep/replace config file?", or
-`needrestart` "which services to restart?" question during `dpkg --configure -a`
-or `apt upgrade` is answered without human input (keeps the current config and
-auto-restarts services).
+`DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=a`, and (by default)
+`force-confnew`, so any "yes/no", "keep/replace config file?", or `needrestart`
+"which services to restart?" question during `dpkg --configure -a` or
+`apt upgrade` is answered without human input:
+
+- **Config files:** the package maintainer's **new** version is installed
+  (`apt_dpkg_options: force-confnew`). Set it to `force-confold` in
+  `group_vars/ubuntu.yml` if you would rather keep the existing config.
+- **Services:** restarted automatically (`needrestart`), no prompt.
+
+> ⚠️ `force-confnew` overwrites locally-customised config files with the
+> package default. If some hosts have hand-edited configs you must keep, use
+> `force-confold` instead.
 
 Then a final play (runs once) **prints the summary**:
 
