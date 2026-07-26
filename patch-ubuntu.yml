@@ -2,7 +2,7 @@
 # patch-ubuntu.yml
 #
 # Patch Ubuntu servers with "apt upgrade", fix any broken dpkg state,
-# reboot every server that actually got patched, and print a final
+# reboot every server whose patching succeeded, and print a final
 # patching status summary on screen.
 #
 # Usage:
@@ -33,10 +33,15 @@
 
         # 1. Fix any half-configured / broken dpkg state first.
         #    --force-confdef/--force-confold auto-answer config-file prompts.
+        #    Retried so a transient dpkg lock (e.g. unattended-upgrades) does
+        #    not fail the host outright.
         - name: Fix dpkg state (dpkg --configure -a)
           ansible.builtin.command: dpkg --configure -a --force-confdef --force-confold
           register: dpkg_fix
           changed_when: dpkg_fix.stdout | length > 0
+          retries: 5
+          delay: 30
+          until: dpkg_fix is succeeded
 
         # 2. Update the package list.
         #    Non-fatal: retry a few times, but if it still fails we continue
@@ -44,44 +49,52 @@
         - name: Update apt cache (non-fatal — patch even if this fails)
           ansible.builtin.apt:
             update_cache: true
+            lock_timeout: 60
           register: apt_cache
-          retries: 3
+          retries: 2
           delay: 5
           until: apt_cache is succeeded
           ignore_errors: true
 
         # 3. Patch with apt upgrade (auto-answer all prompts).
+        #    lock_timeout waits up to 5 min for the dpkg lock instead of
+        #    failing instantly; retried for transient lock/network errors.
         - name: Run apt upgrade
           ansible.builtin.apt:
             upgrade: "{{ apt_upgrade_type | default('safe') }}"
             dpkg_options: "force-confdef,force-confold"
+            lock_timeout: 300
           register: apt_upgrade
+          retries: 3
+          delay: 30
+          until: apt_upgrade is succeeded
 
         # 4a. Remove unused/orphaned dependency packages.
         - name: Remove unused dependencies (autoremove)
           ansible.builtin.apt:
             autoremove: true
             purge: false
+            lock_timeout: 300
 
         # 4b. Clean obsolete .deb files from the local cache.
         - name: Clean apt cache (autoclean)
           ansible.builtin.apt:
             autoclean: true
+            lock_timeout: 300
 
-        # 5. MANDATORY reboot when this host was actually patched.
-        - name: Reboot the host because it was patched
+        # 5. Reboot EVERY host whose patching succeeded (reached this point),
+        #    whether or not new packages were installed.
+        - name: Reboot the host after successful patching
           ansible.builtin.reboot:
             msg: "Reboot after Ansible patching"
-            reboot_timeout: "{{ reboot_timeout | default(600) }}"
-          when:
-            - apt_upgrade is changed
-            - not ansible_check_mode
+            reboot_timeout: "{{ reboot_timeout | default(900) }}"
+          when: not ansible_check_mode
 
         # 6. Record the result for the summary.
         - name: Mark host SUCCESS
           ansible.builtin.set_fact:
             patch_status: "SUCCESS"
-            patch_rebooted: "{{ apt_upgrade is changed }}"
+            patch_rebooted: "{{ not ansible_check_mode }}"
 
       rescue:
         - name: Mark host FAILED
@@ -126,3 +139,10 @@
           - "UNREACHABLE/SKIPPED  ({{ unreached | length }}): {{ unreached }}"
           - "REBOOTED             ({{ rebooted | length }}): {{ rebooted }}"
           - "=================================================="
+
+    # Print WHY each failed host failed, so failures can be diagnosed.
+    - name: Show failure reason per failed host
+      ansible.builtin.debug:
+        msg: "{{ item }} FAILED: {{ hostvars[item].patch_error | default('see the task output above for this host') }}"
+      loop: "{{ failed }}"
+      when: failed | length > 0
