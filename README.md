@@ -29,6 +29,9 @@ the summary regardless of result.
 
 ## What it does (per host)
 
+0. **Disables the apt proxy** — comments out any `Acquire::http(s)::Proxy` lines
+   in `/etc/apt/apt.conf.d/01proxy` (a bad/slow proxy makes the cache update
+   hang). A `.bak` backup is kept. Path is overridable via `apt_proxy_file`.
 1. **Fixes dpkg state** with `dpkg --configure -a` (auto-answers config-file
    prompts via `--force-confdef --force-confold`).
 2. **Updates the apt cache — non-fatal.** Retries a few times; if it still
@@ -42,9 +45,11 @@ the summary regardless of result.
 6. Records SUCCESS / FAILED for the summary.
 
 **Prompts are answered automatically.** Every step runs with
-`DEBIAN_FRONTEND=noninteractive` and `force-confdef,force-confold`, so any
-"yes/no" or "keep/replace config file?" question during `dpkg --configure -a`
-or `apt upgrade` is answered without human input (keeps the current config).
+`DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=a`, and
+`force-confdef,force-confold`, so any "yes/no", "keep/replace config file?", or
+`needrestart` "which services to restart?" question during `dpkg --configure -a`
+or `apt upgrade` is answered without human input (keeps the current config and
+auto-restarts services).
 
 Then a final play (runs once) **prints the summary**:
 

@@ -24,14 +24,31 @@
 
   tasks:
     - name: Patch this host
-      # Answer every debconf / dpkg prompt automatically (no interactive
-      # "yes/no" questions): run non-interactively and keep existing config
-      # files on any conffile prompt.
+      # Answer every prompt automatically (no interactive questions):
+      #  - DEBIAN_FRONTEND=noninteractive  -> no debconf "yes/no" dialogs
+      #  - NEEDRESTART_MODE=a              -> needrestart auto-restarts
+      #    services instead of asking which ones to restart (Ubuntu 22.04+)
       environment:
         DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: a
       block:
 
-        # 1. Fix any half-configured / broken dpkg state first.
+        # 0. Disable the apt proxy first (a bad/slow proxy makes apt cache
+        #    hang). Comment out the Acquire::*::Proxy lines if the file exists.
+        - name: Check for apt proxy config
+          ansible.builtin.stat:
+            path: "{{ apt_proxy_file | default('/etc/apt/apt.conf.d/01proxy') }}"
+          register: apt_proxy
+
+        - name: Comment out apt proxy settings
+          ansible.builtin.replace:
+            path: "{{ apt_proxy_file | default('/etc/apt/apt.conf.d/01proxy') }}"
+            regexp: '^(\s*Acquire::(?:http|https)::Proxy\b.*)$'
+            replace: '# \1'
+            backup: true
+          when: apt_proxy.stat.exists
+
+        # 1. Fix any half-configured / broken dpkg state.
         #    --force-confdef/--force-confold auto-answer config-file prompts.
         #    Retried so a transient dpkg lock (e.g. unattended-upgrades) does
         #    not fail the host outright.
@@ -44,8 +61,8 @@
           until: dpkg_fix is succeeded
 
         # 2. Update the package list.
-        #    Non-fatal: retry a few times, but if it still fails we continue
-        #    and patch with the existing cache instead of breaking the run.
+        #    Non-fatal: try twice, but if it still fails we continue and patch
+        #    with the existing cache instead of breaking the run.
         - name: Update apt cache (non-fatal — patch even if this fails)
           ansible.builtin.apt:
             update_cache: true
