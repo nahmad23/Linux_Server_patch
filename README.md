@@ -29,13 +29,22 @@ the summary regardless of result.
 
 ## What it does (per host)
 
-1. **Fixes dpkg state** with `dpkg --configure -a`.
-2. Updates the apt cache.
+1. **Fixes dpkg state** with `dpkg --configure -a` (auto-answers config-file
+   prompts via `--force-confdef --force-confold`).
+2. **Updates the apt cache — non-fatal.** Retries a few times; if it still
+   fails, the run continues and patches with the existing cache instead of
+   breaking.
 3. Runs **`apt upgrade`** (`safe` upgrade by default; configurable).
-4. Autoremoves unused dependencies and cleans the cache.
+4. **Autoremoves** unused/orphaned dependencies, then **autocleans** the cache
+   (two separate steps so autoremove always runs).
 5. **Mandatory reboot if the host was patched** (i.e. `apt upgrade` changed
    anything). Hosts with no updates are not rebooted.
 6. Records SUCCESS / FAILED for the summary.
+
+**Prompts are answered automatically.** Every step runs with
+`DEBIAN_FRONTEND=noninteractive` and `force-confdef,force-confold`, so any
+"yes/no" or "keep/replace config file?" question during `dpkg --configure -a`
+or `apt upgrade` is answered without human input (keeps the current config).
 
 Then a final play (runs once) **prints the summary**:
 

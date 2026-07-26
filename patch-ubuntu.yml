@@ -24,29 +24,48 @@
 
   tasks:
     - name: Patch this host
+      # Answer every debconf / dpkg prompt automatically (no interactive
+      # "yes/no" questions): run non-interactively and keep existing config
+      # files on any conffile prompt.
+      environment:
+        DEBIAN_FRONTEND: noninteractive
       block:
 
         # 1. Fix any half-configured / broken dpkg state first.
+        #    --force-confdef/--force-confold auto-answer config-file prompts.
         - name: Fix dpkg state (dpkg --configure -a)
-          ansible.builtin.command: dpkg --configure -a
+          ansible.builtin.command: dpkg --configure -a --force-confdef --force-confold
           register: dpkg_fix
           changed_when: dpkg_fix.stdout | length > 0
 
         # 2. Update the package list.
-        - name: Update apt cache
+        #    Non-fatal: retry a few times, but if it still fails we continue
+        #    and patch with the existing cache instead of breaking the run.
+        - name: Update apt cache (non-fatal — patch even if this fails)
           ansible.builtin.apt:
             update_cache: true
+          register: apt_cache
+          retries: 3
+          delay: 5
+          until: apt_cache is succeeded
+          ignore_errors: true
 
-        # 3. Patch with apt upgrade.
+        # 3. Patch with apt upgrade (auto-answer all prompts).
         - name: Run apt upgrade
           ansible.builtin.apt:
             upgrade: "{{ apt_upgrade_type | default('safe') }}"
+            dpkg_options: "force-confdef,force-confold"
           register: apt_upgrade
 
-        # 4. Clean up.
-        - name: Remove unused dependencies and clean cache
+        # 4a. Remove unused/orphaned dependency packages.
+        - name: Remove unused dependencies (autoremove)
           ansible.builtin.apt:
             autoremove: true
+            purge: false
+
+        # 4b. Clean obsolete .deb files from the local cache.
+        - name: Clean apt cache (autoclean)
+          ansible.builtin.apt:
             autoclean: true
 
         # 5. MANDATORY reboot when this host was actually patched.
